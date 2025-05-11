@@ -26,17 +26,133 @@ macro_rules! respond {
 }
 
 
-fn handle_email(from: String, rcpts: Vec<String>, message: String) {
+struct Headers {
+  headers: Vec<(String, String)>
+}
+impl Headers {
+  fn get(&self, key: &str) -> String {
+    for i in &self.headers {
+      if i.0 == key {
+        return i.1.to_string()
+      }
+    }
+    String::new()
+  }
+  fn new(headers: Vec<(String, String)>) -> Headers {
+    Headers { headers }
+  }
+}
+
+
+fn parse_contents(contents: String) -> (Headers, String, String) {
+  println!("{:#?}", contents);
+  let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
+  println!("SPLIT: {:#?}", split);
+  
+  // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
+
+  if split.len()>2 {
+    let mut headers = split[0].split("\r\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
+    let mut offset = 0;
+    for i in 1..headers.len() {
+      let i = i-offset;
+      if headers[i].starts_with(" ") {
+        let part = headers[i].clone();
+        headers[i-1] += &part;
+        headers.remove(i);
+        offset += 1;
+      }
+    }
+
+    
+    
+    let headers = Headers::new(headers.iter().map(|x| {
+      let splt = x.split(":").collect::<Vec<&str>>();
+      let name = splt[0].trim().to_string();
+      let mut value = String::new();
+      if splt.len()==1 {
+        return (name, value);
+      }
+      for i in &splt[1..] {
+        value += i;
+      }
+      (name, value.trim().to_string())
+    }).collect::<Vec<(String, String)>>());
+
+    let ctype = headers.get("Content-Type");
+
+    let mut plain = String::from("Couldn't load body [report!].");
+    let mut html = String::from("Couldn't load body [report!].");
+    if ctype != String::new() {
+      let splt = ctype.split(";").collect::<Vec<&str>>();
+      if splt[0].trim() == "multipart/alternative" {
+        if splt.len()>1 {
+          let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
+          let mut boundary_c = boundary.chars();
+          if boundary.starts_with("\"") && boundary.ends_with("\"") {
+            boundary_c.next();
+            boundary_c.next_back();
+          }
+          let boundary = boundary_c.collect::<String>();
+          println!("{}", boundary);
+          plain = String::new();
+          html = String::new();
+          for i in 1..split.len()-1 {
+            if split[i].starts_with(&("--".to_owned() + &boundary)) {
+              let splt = split[i].split("\r\n\n").collect::<Vec<&str>>();
+              if splt.len()<2 {
+                continue
+              }
+              let tmp = splt[1].to_string();
+              println!("TMP: {tmp}");
+              if !tmp.contains(":") {
+                continue
+              }
+              let ctype = &tmp.split(":").collect::<Vec<&str>>()[1].split(";").collect::<Vec<&str>>()[0].trim();
+              println!("CTYPE: {ctype}");
+              if ctype == &"text/plain" {
+                plain = split[i+1].to_string();
+              } else if ctype == &"text/html" {
+                html = split[i+1].to_string();
+              }
+            }
+          }
+        }
+      }
+    } else {
+      if split.len() > 1 {
+        plain = String::new();
+        for i in &split[1..] {
+          plain += i;
+        }
+        html = plain.clone();
+      }
+    }
+
+
+    (headers, plain, html)
+  } else {
+    return (Headers::new(vec![]), contents.clone(), contents) //specify further, please
+  }
+}
+
+fn handle_email(from: String, rcpts: Vec<String>, contents: String) {
   let mut recipents = String::new();
   for i in rcpts {
     recipents.push_str(&(i + ", "));
   }
+  let (headers, plain, html) = parse_contents(contents.clone());
+  //println!("{:#?} \n ::::::: \n {:#?}", headers, body);
+  let subject = headers.get("Subject");
+  let date = headers.get("Date");
   println!("
 NEW FOKMAIL
 FROM: {from}
 TO: {recipents}
+DATE: {date}
+SUBJECT: {subject}
 CONTENTS:
-{message}
+{plain}
   ");
 }
 
