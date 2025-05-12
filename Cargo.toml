@@ -2,3 +2,6 @@
 name = "fokmail"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+sqlite = "0.37.0"

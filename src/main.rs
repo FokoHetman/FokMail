@@ -1,11 +1,12 @@
 mod utils;
 use utils::threading::ThreadPool;
 use std::{
-  io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{TcpListener, TcpStream}, str, sync::{Arc,Mutex}
+  env, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{TcpListener, TcpStream}, str, sync::{Arc,Mutex}, thread
 };
+use sqlite;
 
 struct Controller {
-
+  db_path: String
 }
 
 
@@ -47,8 +48,6 @@ impl Headers {
 fn parse_contents(contents: String) -> (Headers, String, String) {
   println!("{:#?}", contents);
   let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
-  println!("SPLIT: {:#?}", split);
-  
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
 
   if split.len()>2 {
@@ -94,7 +93,6 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
             boundary_c.next_back();
           }
           let boundary = boundary_c.collect::<String>();
-          println!("{}", boundary);
           plain = String::new();
           html = String::new();
           for i in 1..split.len()-1 {
@@ -104,12 +102,10 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
                 continue
               }
               let tmp = splt[1].to_string();
-              println!("TMP: {tmp}");
               if !tmp.contains(":") {
                 continue
               }
               let ctype = &tmp.split(":").collect::<Vec<&str>>()[1].split(";").collect::<Vec<&str>>()[0].trim();
-              println!("CTYPE: {ctype}");
               if ctype == &"text/plain" {
                 plain = split[i+1].to_string();
               } else if ctype == &"text/html" {
@@ -135,8 +131,8 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
     return (Headers::new(vec![]), contents.clone(), contents) //specify further, please
   }
 }
-
-fn handle_email(from: String, rcpts: Vec<String>, contents: String) {
+const months: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+fn handle_email(from: String, rcpts: Vec<String>, contents: String, db_path: String) {
   let mut recipents = String::new();
   for i in rcpts {
     recipents.push_str(&(i + ", "));
@@ -154,6 +150,18 @@ SUBJECT: {subject}
 CONTENTS:
 {plain}
   ");
+
+  let splt = date.split(" ").collect::<Vec<&str>>();
+  let year = splt[3];
+  let month = months.iter().position(|x| x==&splt[2][..3].to_lowercase()).unwrap()+1;
+  let day = splt[1];
+  let time = splt[4];
+
+  let conn = sqlite::open(&db_path).unwrap();
+  let query = &format!("
+    INSERT INTO mails VALUES ('{subject}', '{plain}', '{html}', '{from}', '{recipents}', '{year}-{month}-{day} {time}');
+  ");
+  conn.execute(query).unwrap();
 }
 
 fn handle_connection(mut stream: TcpStream, controller: Arc<Mutex<Controller>>) {
@@ -225,7 +233,9 @@ fn handle_connection(mut stream: TcpStream, controller: Arc<Mutex<Controller>>) 
       STMTState::Data => {
         if buffer.trim() == "." {
           respond!("250 OK", writer);
-          handle_email(from.unwrap(), rcpts, message);
+          let lock = controller.lock();
+          let contr = lock.unwrap();
+          handle_email(from.unwrap(), rcpts, message, contr.db_path.clone());
           from = None;
           rcpts = vec![];
           message = String::new();
@@ -252,8 +262,45 @@ fn estabilish_listener(ip: &str, controller: Arc<Mutex<Controller>>) {
   }
 }
 
+fn create_account(mail: String, hash: String, db_path: String) {
+  let conn = sqlite::open(":mailserver:").unwrap();
+  let query = &format!("
+    INSERT INTO accounts VALUES ({mail}, {hash});
+  ");
+  conn.execute(query).unwrap();
+}
+
+fn estabilish_database(db_path: String) {
+  let conn = sqlite::open(&db_path).unwrap();
+  let query = "
+    CREATE TABLE IF NOT EXISTS mails (subject TEXT, contents TEXT, html TEXT, sender TEXT, recipent TEXT, date DATE);
+    CREATE TABLE IF NOT EXISTS accounts (mail TEXT, hash TEXT);
+  ";
+  conn.execute(query).unwrap();
+}
+
 fn main() {
-  let mut controller_raw = Controller {};
+  let args = env::args().collect::<Vec<String>>();
+  let mut db_path = ":mailserver:".to_string();
+  for i in 0..args.len() {
+    if args[i]=="--db" {
+      db_path = args[i+1].to_string();
+    }
+  }
+  estabilish_database(db_path.clone());
+  let mut controller_raw = Controller {db_path: db_path.clone()};
   let mut controller = Arc::new(Mutex::new(controller_raw));
-  estabilish_listener("0.0.0.0:25", controller);
+  thread::spawn(|| {estabilish_listener("0.0.0.0:25", controller)});
+
+  loop {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim().split(" ").collect::<Vec<&str>>();
+    match input[0] {
+      "new_account" => {
+        create_account(input[1].to_string(), input[2].to_string(), db_path.clone());
+      }
+      _ => {}
+    }
+  }
 }
