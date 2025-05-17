@@ -1,7 +1,7 @@
 mod utils;
 use utils::threading::ThreadPool;
 use std::{
-  env, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{TcpListener, TcpStream}, str, sync::{Arc,Mutex}, thread
+  env, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{TcpListener, TcpStream}, panic, str, sync::{Arc,Mutex}, thread
 };
 use sqlite;
 
@@ -258,7 +258,12 @@ fn estabilish_listener(ip: &str, controller: Arc<Mutex<Controller>>) {
   for stream in listener.incoming() {
     let stream = stream.unwrap();
     let clone = Arc::clone(&controller);
-    pool.execute(|| {let _ = handle_connection(stream, clone);});
+    pool.execute(|| {
+      let panic = panic::catch_unwind(||handle_connection(stream, clone));
+      if panic.is_ok() {
+        panic.unwrap()
+      }
+    });
   }
 }
 
@@ -290,9 +295,9 @@ fn main() {
   estabilish_database(db_path.clone());
   let mut controller_raw = Controller {db_path: db_path.clone()};
   let mut controller = Arc::new(Mutex::new(controller_raw));
-  thread::spawn(|| {estabilish_listener("0.0.0.0:25", controller)});
+  /*thread::spawn(|| */estabilish_listener("0.0.0.0:25", controller)//);
 
-  loop {
+  /*loop {
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
     let input = input.trim().split(" ").collect::<Vec<&str>>();
@@ -302,5 +307,5 @@ fn main() {
       }
       _ => {}
     }
-  }
+  }*/
 }
