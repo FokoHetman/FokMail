@@ -279,7 +279,6 @@ fn estabilish_database(db_path: String) {
   let conn = sqlite::open(&db_path).unwrap();
   let query = "
     CREATE TABLE IF NOT EXISTS mails (subject TEXT, contents TEXT, html TEXT, sender TEXT, recipent TEXT, date DATE);
-    CREATE TABLE IF NOT EXISTS accounts (mail TEXT, hash TEXT);
   ";
   conn.execute(query).unwrap();
 }
