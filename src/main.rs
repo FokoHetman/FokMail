@@ -1,7 +1,7 @@
 mod utils;
 use utils::threading::ThreadPool;
 use std::{
-  env, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{TcpListener, TcpStream}, panic, str, sync::{Arc,Mutex}, thread
+  env, fs::{self, File}, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs}, panic, process::{Command, Stdio}, str, sync::{Arc,Mutex}, thread
 };
 use sqlite;
 
@@ -267,13 +267,13 @@ fn estabilish_listener(ip: &str, controller: Arc<Mutex<Controller>>) {
   }
 }
 
-fn create_account(mail: String, hash: String, db_path: String) {
+/*fn create_account(mail: String, hash: String, db_path: String) {
   let conn = sqlite::open(":mailserver:").unwrap();
   let query = &format!("
     INSERT INTO accounts VALUES ({mail}, {hash});
   ");
   conn.execute(query).unwrap();
-}
+}*/
 
 fn estabilish_database(db_path: String) {
   let conn = sqlite::open(&db_path).unwrap();
@@ -283,12 +283,149 @@ fn estabilish_database(db_path: String) {
   conn.execute(query).unwrap();
 }
 
+fn compute_bh(body: String) -> String {
+  let mut file = File::create("body.txt").unwrap();
+  let normalized = body.replace("\n", "\r\n").trim_end_matches("\r\n").to_string();
+  file.write_all(normalized.as_bytes()).unwrap();
+
+  let output = Command::new("openssl")
+    .args(&["dgst", "-sha256", "-binary", "body.txt"])
+    .output()
+    .expect("failed to execute openssl");
+
+  // base64 encode using openssl base64 (or Rust manual if you want)
+  let base64_output = Command::new("openssl")
+    .args(&["base64", "-A"])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .and_then(|mut child| {
+      let stdin = child.stdin.as_mut().unwrap();
+      stdin.write_all(&output.stdout)?;
+      let output = child.wait_with_output()?;
+      Ok(output)
+    })
+    .expect("failed to base64 encode");
+
+  String::from_utf8(base64_output.stdout).unwrap().trim().to_string()
+
+}
+
+fn compute_b(headers: &str, sig: &str) -> String{
+  let mut result = String::new();
+  for i in headers.split("\n") {
+    let splt = i.split(":").collect::<Vec<&str>>();
+    result += &splt[0].to_lowercase();
+    result += ":";
+    result += &splt[1..].concat();
+    result += "\r\n";
+  }
+  let splt = sig.split(":").collect::<Vec<&str>>();
+  result += &splt[0].to_lowercase();
+  result += &splt[1..].concat();
+
+  let mut file = File::create("signing_string.txt").unwrap();
+  file.write_all(result.as_bytes()).unwrap();
+
+  let signed_output = Command::new("openssl")
+    .args(&["dgst", "-sha256", "-sign", "dkim_private.key", "signing_string.txt"])
+    .output()
+    .expect("Failed to sign DKIM headers");
+
+  if !signed_output.status.success() {
+    panic!("OpenSSL sign failed: {:?}", signed_output.stderr);
+  }
+
+  // Step 2: Base64-encode the binary signature
+  let mut base64 = Command::new("openssl")
+    .args(&["base64", "-A"])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("Failed to start base64 command");
+
+  {
+    let stdin = base64.stdin.as_mut().expect("Failed to open stdin");
+    stdin.write_all(&signed_output.stdout).expect("Failed to write signature to base64");
+  }
+
+  let output = base64.wait_with_output().expect("Failed to read base64 output");
+  if !output.status.success() {
+    panic!("Base64 failed: {:?}", output.stderr);
+  }
+
+  // Convert to String and trim
+  String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn send_email(from: String, to: String, subject: String, body: String) -> Result<(),io::Error> {
+  let server = to.split("@").collect::<Vec<&str>>()[1].to_string();
+  let sock = server.to_socket_addrs().unwrap().next().unwrap();
+  let conn = TcpStream::connect(&sock)?;
+  
+  let mut reader = BufReader::new(conn.try_clone().unwrap());
+  let mut writer = BufWriter::new(conn);
+  let mut buf = String::new();
+  reader.read_line(&mut buf)?;
+  println!("=={buf}==");
+
+  writer.write(b"HELO hetman.at\r\n")?;
+  writer.flush()?;
+  reader.read_line(&mut buf).unwrap();
+
+  writer.write(&format!("MAIL FROM: <{from}>\r\n").as_bytes())?;
+  writer.flush()?;
+  reader.read_line(&mut buf)?;
+
+
+  writer.write(&format!("RCPT TO:<{to}>\r\n").as_bytes())?;
+  writer.flush()?;
+  reader.read_line(&mut buf)?;
+
+  // DATA
+  writer.write(b"DATA\r\n")?;
+  writer.flush()?;
+  reader.read_line(&mut buf)?;
+
+  let headers = &format!("From: You <{from}>
+To: <{to}>
+Subject: {subject}
+Date: Fri, 27 Jun 2025 15:00:00 +0200");
+
+  let bh = compute_bh(body.clone());
+  let sig = &format!("DKIM-Signature: v=1; a=rsa-sha256; d=hetman.at; s=mail; h=from:to:subject:date; bh={bh}; b=");
+  let b = compute_b(headers, sig);
+  // Build email body with headers, including DKIM
+  let email = format!("{sig}{b}
+
+{headers}
+
+{body}
+");
+
+  writer.write(email.as_bytes())?;
+  writer.write(b"\r\n.\r\n")?; // End of DATA
+  writer.flush()?;
+  reader.read_line(&mut buf)?;
+
+  // QUIT
+  writer.write(b"QUIT\r\n")?;
+  writer.flush()?;
+  println!("{:#?}", buf);
+  Ok(())
+
+}
+
 fn main() {
   let args = env::args().collect::<Vec<String>>();
   let mut db_path = ":mailserver:".to_string();
   for i in 0..args.len() {
     if args[i]=="--db" {
       db_path = args[i+1].to_string();
+    }
+    if args[i]=="--send" {
+      send_email(args[i+1].clone(), args[i+2].clone(), args[i+3].clone(), args[i+4].clone());
+      return
     }
   }
   estabilish_database(db_path.clone());
