@@ -316,19 +316,25 @@ fn compute_b(headers: &str, sig: &str) -> String{
   for i in headers.split("\n") {
     let splt = i.split(":").collect::<Vec<&str>>();
     result += &splt[0].to_lowercase();
-    result += ":";
-    result += &splt[1..].concat();
+    //result += ":";
+    for i in &splt[1..] {
+      result += ":";
+      result += i;
+    }
     result += "\r\n";
   }
   let splt = sig.split(":").collect::<Vec<&str>>();
   result += &splt[0].to_lowercase();
-  result += &splt[1..].concat();
+  for i in &splt[1..] {
+    result += ":";
+    result += i;
+  }
 
   let mut file = File::create("signing_string.txt").unwrap();
   file.write_all(result.as_bytes()).unwrap();
 
   let signed_output = Command::new("openssl")
-    .args(&["dgst", "-sha256", "-sign", "dkim_private.key", "signing_string.txt"])
+    .args(&["dgst", "-sha256", "-sign", "/home/foko/KEYS/dkim_private.key", "signing_string.txt"])
     .output()
     .expect("Failed to sign DKIM headers");
 
@@ -359,8 +365,10 @@ fn compute_b(headers: &str, sig: &str) -> String{
 }
 
 fn send_email(from: String, to: String, subject: String, body: String) -> Result<(),io::Error> {
-  let server = to.split("@").collect::<Vec<&str>>()[1].to_string();
+  let server = to.split("@").collect::<Vec<&str>>()[1].to_string() + ":25";
+  println!("{server}");
   let sock = server.to_socket_addrs().unwrap().next().unwrap();
+  println!("{:#?}", sock);
   let conn = TcpStream::connect(&sock)?;
   
   let mut reader = BufReader::new(conn.try_clone().unwrap());
