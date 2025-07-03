@@ -107,13 +107,8 @@ fn parse_contents(contents: String) -> (Headers, Headers) {
                 continue
               }
               let ctype = &tmp.split(":").collect::<Vec<&str>>()[1].split(";").collect::<Vec<&str>>()[0].trim();
-              
+              println!("{ctype}");
               contents.push((ctype.to_string(), split[i+1].to_string()));
-              /*if ctype == &"text/plain" {
-                plain = split[i+1].to_string();
-              } else if ctype == &"text/html" {
-                html = split[i+1].to_string();
-              }*/
             }
           }
         }
