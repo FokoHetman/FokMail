@@ -45,7 +45,7 @@ impl Headers {
 }
 
 
-fn parse_contents(contents: String) -> (Headers, String, String) {
+fn parse_contents(contents: String) -> (Headers, Headers) {
   println!("{:#?}", contents);
   let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
@@ -80,8 +80,11 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
 
     let ctype = headers.get("Content-Type");
 
-    let mut plain = String::from("Couldn't load body [report!].");
-    let mut html = String::from("Couldn't load body [report!].");
+    /*let mut plain = String::from("Couldn't load body [report!].");
+    let mut html = String::from("Couldn't load body [report!].");*/
+
+    let mut contents = vec![];
+
     if ctype != String::new() {
       let splt = ctype.split(";").collect::<Vec<&str>>();
       if splt[0].trim() == "multipart/alternative" {
@@ -93,8 +96,6 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
             boundary_c.next_back();
           }
           let boundary = boundary_c.collect::<String>();
-          plain = String::new();
-          html = String::new();
           for i in 1..split.len()-1 {
             if split[i].starts_with(&("--".to_owned() + &boundary)) {
               let splt = split[i].split("\r\n\n").collect::<Vec<&str>>();
@@ -106,41 +107,51 @@ fn parse_contents(contents: String) -> (Headers, String, String) {
                 continue
               }
               let ctype = &tmp.split(":").collect::<Vec<&str>>()[1].split(";").collect::<Vec<&str>>()[0].trim();
-              if ctype == &"text/plain" {
+              
+              contents.push((ctype.to_string(), split[i+1].to_string()));
+              /*if ctype == &"text/plain" {
                 plain = split[i+1].to_string();
               } else if ctype == &"text/html" {
                 html = split[i+1].to_string();
-              }
+              }*/
             }
           }
         }
       }
     } else {
       if split.len() > 1 {
-        plain = String::new();
+        let mut plain = String::new();
         for i in &split[1..] {
           plain += i;
         }
-        html = plain.clone();
+        contents.push(("text/plain".to_string(), plain));
       }
     }
 
 
-    (headers, plain, html)
+    (headers, Headers::new(contents))
   } else {
-    return (Headers::new(vec![]), contents.clone(), contents) //specify further, please
+    return (Headers::new(vec![]), Headers::new(vec![("unknown".to_string(), contents)])) //specify further, please
   }
 }
 const months: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-fn handle_email(from: String, rcpts: Vec<String>, contents: String, db_path: String) {
+fn handle_email(from: String, rcpts: Vec<String>, rcontents: String, db_path: String) {
   let mut recipents = String::new();
   for i in rcpts {
     recipents.push_str(&(i + ", "));
   }
-  let (headers, plain, html) = parse_contents(contents.clone());
+  let (headers, contents) = parse_contents(rcontents.clone());
   //println!("{:#?} \n ::::::: \n {:#?}", headers, body);
   let subject = headers.get("Subject");
   let date = headers.get("Date");
+  
+  let mut plain = String::from("no text.");
+
+  let plain_t = contents.get("text/plain");
+  if plain_t != String::new() {
+    plain = plain_t
+  }
+
   println!("
 NEW FOKMAIL
 FROM: {from}
@@ -150,6 +161,11 @@ SUBJECT: {subject}
 CONTENTS:
 {plain}
   ");
+  println!("\nAlso contains:");
+  for i in contents.headers {
+    println!("{}", i.0);
+  }
+  println!("\n");
 
   let splt = date.split(" ").collect::<Vec<&str>>();
   let year = splt[3];
@@ -159,7 +175,7 @@ CONTENTS:
 
   let conn = sqlite::open(&db_path).unwrap();
   let query = &format!("
-    INSERT INTO mails VALUES ('{subject}', '{plain}', '{html}', '{from}', '{recipents}', '{year}-{month}-{day} {time}');
+    INSERT INTO mails VALUES ('{subject}', '{rcontents}', '{from}', '{recipents}', '{year}-{month}-{day} {time}');
   ");
   conn.execute(query).unwrap();
 }
@@ -278,7 +294,7 @@ fn estabilish_listener(ip: &str, controller: Arc<Mutex<Controller>>) {
 fn estabilish_database(db_path: String) {
   let conn = sqlite::open(&db_path).unwrap();
   let query = "
-    CREATE TABLE IF NOT EXISTS mails (subject TEXT, contents TEXT, html TEXT, sender TEXT, recipent TEXT, date DATE);
+    CREATE TABLE IF NOT EXISTS mails (subject TEXT, contents TEXT, sender TEXT, recipent TEXT, date DATE);
   ";
   conn.execute(query).unwrap();
 }
