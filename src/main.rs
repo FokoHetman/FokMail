@@ -123,7 +123,7 @@ fn parse_contents(contents: String) -> (Headers, Headers) {
       }
     }
 
-
+    println!("{:#?}", contents);
     (headers, Headers::new(contents))
   } else {
     return (Headers::new(vec![]), Headers::new(vec![("unknown".to_string(), contents)])) //specify further, please
