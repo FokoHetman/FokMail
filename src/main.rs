@@ -88,7 +88,7 @@ fn parse_contents(contents: String) -> (Headers, Headers) {
     if ctype != String::new() {
       let splt = ctype.split(";").collect::<Vec<&str>>();
       println!("{}", splt[0].trim());
-      if splt[0].trim() == "multipart/alternative" {
+      if vec!["multipart/alternative", "multipart/mixed"].contains(&splt[0].trim()) {
         if splt.len()>1 {
           let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
           let mut boundary_c = boundary.chars();
@@ -238,7 +238,15 @@ fn handle_connection(mut stream: TcpStream, controller: Arc<Mutex<Controller>>) 
             respond!("354 End data with <CR><LF>.<CR><LF>", writer);
           }
           _ => {
-            respond!(format!("500 Unknown Command: {}", cmd[0]), writer)
+            let manifest = writer.write_all(format!("500 Unknown command: {}\r\n", cmd[0]).as_bytes());
+            if manifest.is_err() {
+              return
+            }
+            let manifest = writer.flush();
+            if manifest.is_err() {
+              return
+            }
+            manifest.unwrap()
           }
         }
       }
