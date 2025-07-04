@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 sqlite = "0.37.0"
+encryption = { git = "ssh://git@hetman.at/~/cargo/encryption" }

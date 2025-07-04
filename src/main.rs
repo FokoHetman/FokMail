@@ -3,6 +3,7 @@ use utils::threading::ThreadPool;
 use std::{
   env, fs::{self, File}, io::{self, BufRead, BufReader, BufWriter, Read, Write}, net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs}, panic, process::{Command, Stdio}, str, sync::{Arc,Mutex}, thread
 };
+use encryption;
 use sqlite;
 
 struct Controller {
@@ -27,6 +28,9 @@ macro_rules! respond {
 }
 
 
+// TODO: convert Headers and Contents into dicts for foks sake
+
+#[derive(Debug, Clone)]
 struct Headers {
   headers: Vec<(String, String)>
 }
@@ -44,9 +48,138 @@ impl Headers {
   }
 }
 
+#[derive(Debug, Clone)]
+struct Contents {
+  contents: Vec<(String, (Headers, String))>
+}
+impl Contents {
+  fn get(&self, key: &str) -> (Headers, String) {
+    for i in &self.contents {
+      if i.0 == key {
+        return i.1.clone()
+      }
+    }
+    (Headers::new(vec![]), String::new())
+  }
+  fn new(contents: Vec<(String, (Headers, String))>) -> Contents {
+    Contents { contents }
+  }
+}
 
-fn parse_contents(contents: String) -> (Headers, Headers) {
+
+#[derive(Debug,Clone)]
+enum Body {
+  Unit(Headers, String),
+  Alternative(Vec<Box<Body>>),
+  Mixed(Vec<Box<Body>>),
+}
+
+fn parse_content(lines: String) -> (Headers, Body) {
+  let split = lines.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
+  let mut headers = split[0].split("\r\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
+  let mut offset = 0;
+  for i in 1..headers.len() {
+    let i = i-offset;
+    if headers[i].starts_with(" ") {
+      let part = headers[i].clone();
+      headers[i-1] += &part;
+      headers.remove(i);
+      offset += 1;
+    }
+  }
+  let headers = Headers::new(headers.iter().map(|x| {
+    let splt = x.split(":").collect::<Vec<&str>>();
+    let name = splt[0].trim().to_string();
+    let mut value = String::new();
+    if splt.len()==1 {
+      return (name, value);
+    }
+    for i in &splt[1..] {
+      value += i;
+    }
+    (name, value.trim().to_string())
+  }).collect::<Vec<(String, String)>>());
+
+  let ctype = headers.get("Content-Type");
+
+  let lines = split[1..].join("\r\n\n\r\n\n");
+  let mut lines = lines.split("\r\n\n").collect::<Vec<&str>>();
+  let splt = ctype.split(";").collect::<Vec<&str>>();
+  let rctype = &splt[0].trim();
+
+  println!("RCTYPE: {rctype}");
+  match &rctype as &str {
+    "multipart/mixed" | "multipart/alternative" => {},
+    _ => {println!("SPLIT BEFORE RETURN: {:#?}", split); return (headers.clone(), Body::Unit(headers, split[1].to_string()))},
+  }
+  //println!("{rctype} passed first return");
+
+  let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
+  let mut boundary_c = boundary.chars();
+  if boundary.starts_with("\"") && boundary.ends_with("\"") {
+    boundary_c.next();
+    boundary_c.next_back();
+  }
+  let boundary = boundary_c.collect::<String>();
+
+  let mut conti = false;
+  let mut bodies = vec![];
+  while lines.len() > 0 {
+    let mut body = String::new();
+    if lines[0] == &("--".to_owned() + &boundary) {
+      lines.remove(0);
+      while !lines[0].starts_with(&("--".to_owned() + &boundary)) {
+        body += lines[0];
+        body += "\r\n\n";
+        lines.remove(0);
+      }
+      bodies.push(body);
+      if !lines[0].ends_with("--") {
+        conti = true;
+      }
+    }
+    if !conti {
+      lines.remove(0);
+    }
+    conti = false;
+  }
+  //println!("BODIES: {:#?}", bodies);
+
+  let body = match &rctype as &str {
+    "multipart/mixed" => {
+      Body::Mixed(bodies.iter().map(|x| Box::new(parse_content(x.clone()).1)).collect::<Vec<Box<Body>>>())
+    },
+    "multipart/alternative" => {
+      Body::Alternative(bodies.iter().map(|x| Box::new(parse_content(x.clone()).1)).collect::<Vec<Box<Body>>>())
+    },
+    _ => panic!()
+  };
+
+
+
+  (headers, body)
+}
+
+fn extract(contents: Body) -> Vec<(String, (Headers, String))> {
+  match contents {
+    Body::Unit(x, y) => {
+      let ctype = x.get("Content-Type");
+      let splt = ctype.split(";").collect::<Vec<&str>>();
+      let rctype = &splt[0].trim();
+      vec![(rctype.to_string(),(x,y))]
+    },
+    Body::Mixed(x) => {
+      x.iter().map(|y| extract(*y.clone())).collect::<Vec<Vec<(String,(Headers,String))>>>().concat()
+    },
+    Body::Alternative(x) => {
+      x.iter().map(|y| extract(*y.clone())).collect::<Vec<Vec<(String,(Headers,String))>>>().concat()
+    },
+  }
+}
+
+fn parse_contents(contents: String) -> (Headers, Contents) {
   //println!("{:#?}", contents);
+  let contents_r = contents.clone();
   let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
 
@@ -86,48 +219,22 @@ fn parse_contents(contents: String) -> (Headers, Headers) {
     let mut contents = vec![];
 
     if ctype != String::new() {
-      let splt = ctype.split(";").collect::<Vec<&str>>();
-      println!("{}", splt[0].trim());
-      if vec!["multipart/alternative", "multipart/mixed"].contains(&splt[0].trim()) {
-        if splt.len()>1 {
-          let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
-          let mut boundary_c = boundary.chars();
-          if boundary.starts_with("\"") && boundary.ends_with("\"") {
-            boundary_c.next();
-            boundary_c.next_back();
-          }
-          let boundary = boundary_c.collect::<String>();
-          for i in 1..split.len()-1 {
-            if split[i].starts_with(&("--".to_owned() + &boundary)) {
-              let splt = split[i].split("\r\n\n").collect::<Vec<&str>>();
-              if splt.len()<2 {
-                continue
-              }
-              let tmp = splt[1].to_string();
-              if !tmp.contains(":") {
-                continue
-              }
-              let ctype = &tmp.split(":").collect::<Vec<&str>>()[1].split(";").collect::<Vec<&str>>()[0].trim();
-              println!("{ctype}");
-              contents.push((ctype.to_string(), split[i+1].to_string()));
-            }
-          }
-        }
-      }
+      let conti = parse_content(contents_r);
+      contents = extract(conti.1);
     } else {
       if split.len() > 1 {
         let mut plain = String::new();
         for i in &split[1..] {
           plain += i;
         }
-        contents.push(("text/plain".to_string(), plain));
+        contents.push(("text/plain".to_string(), (Headers::new(vec![]), plain)));
       }
     }
 
-    println!("{:#?}", contents);
-    (headers, Headers::new(contents))
+    //println!("{:#?}", contents);
+    (headers, Contents::new(contents))
   } else {
-    return (Headers::new(vec![]), Headers::new(vec![("unknown".to_string(), contents)])) //specify further, please
+    return (Headers::new(vec![]), Contents::new(vec![("unknown".to_string(), (Headers::new(vec![]), contents))])) //specify further, please
   }
 }
 const months: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -143,7 +250,7 @@ fn handle_email(from: String, rcpts: Vec<String>, rcontents: String, db_path: St
   
   let mut plain = String::from("no text.");
 
-  let plain_t = contents.get("text/plain");
+  let plain_t = contents.get("text/plain").1;
   if plain_t != String::new() {
     plain = plain_t
   }
@@ -158,10 +265,17 @@ CONTENTS:
 {plain}
   ");
   println!("\nAlso contains:");
-  for i in contents.headers {
+  for i in &contents.contents {
     println!("{}", i.0);
   }
   println!("\n");
+
+  if contents.get("image/png").1!=String::new() {
+    let content = contents.get("image/png").1.replace("\r","").replace("\n","");
+    fs::write("last_shared.png", encryption::base64::decode(content).unwrap()).unwrap();
+    println!("wrote the image!");
+  }
+
 
   let splt = date.split(" ").collect::<Vec<&str>>();
   let year = splt[3];
