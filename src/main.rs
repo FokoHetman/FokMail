@@ -46,7 +46,7 @@ impl Headers {
 
 
 fn parse_contents(contents: String) -> (Headers, Headers) {
-  println!("{:#?}", contents);
+  //println!("{:#?}", contents);
   let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
 
@@ -87,6 +87,7 @@ fn parse_contents(contents: String) -> (Headers, Headers) {
 
     if ctype != String::new() {
       let splt = ctype.split(";").collect::<Vec<&str>>();
+      println!("{}", splt[0].trim());
       if splt[0].trim() == "multipart/alternative" {
         if splt.len()>1 {
           let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
