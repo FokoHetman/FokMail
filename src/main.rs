@@ -9,7 +9,7 @@ use sqlite;
 struct Controller {
   db_path: String
 }
-const DB_PATH: &str = "~/DBs/\\:mail\\:";
+const DB_PATH: &str = /*":mailserver:";*/"~/DBs/\\:mail\\:";
 
 #[derive(PartialEq)]
 enum STMTState {
@@ -75,12 +75,15 @@ enum Body {
 }
 
 fn parse_content(lines: String) -> (Headers, Body) {
-  let split = lines.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
-  let mut headers = split[0].split("\r\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
+  let lines = lines.replace("\r\n", "\n");
+  //println!("lines: {lines:#?}");
+  let split = lines.split("\n\n\n\n").collect::<Vec<&str>>();
+  //println!("the split: {split:#?}");
+  let mut headers = split[0].split("\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
   let mut offset = 0;
   for i in 1..headers.len() {
     let i = i-offset;
-    if headers[i].starts_with(" ") {
+    if headers[i].starts_with(" ") || headers[i].starts_with("\t") {
       let part = headers[i].clone();
       headers[i-1] += &part;
       headers.remove(i);
@@ -100,28 +103,36 @@ fn parse_content(lines: String) -> (Headers, Body) {
     (name, value.trim().to_string())
   }).collect::<Vec<(String, String)>>());
 
+  //println!("headers: {headers:#?}");
+
   let ctype = headers.get("Content-Type");
 
-  let lines = split[1..].join("\r\n\n\r\n\n");
-  let mut lines = lines.split("\r\n\n").collect::<Vec<&str>>();
+  let lines = split[1..].join("\n\n\n\n");
+  let mut lines = lines.split("\n\n").collect::<Vec<&str>>();
   let splt = ctype.split(";").collect::<Vec<&str>>();
+  //println!("ctype: {ctype:#?}");
   let rctype = &splt[0].trim();
 
-  println!("RCTYPE: {rctype}");
+  //println!("RCTYPE: {rctype}");
   match &rctype as &str {
     "multipart/mixed" | "multipart/alternative" => {},
-    _ => {println!("SPLIT BEFORE RETURN: {:#?}", split); return (headers.clone(), Body::Unit(headers, split[1].to_string()))},
+    _ => {/*println!("SPLIT BEFORE RETURN: {:#?}", split);*/ return (headers.clone(), Body::Unit(headers, split[1].to_string()))},
   }
   //println!("{rctype} passed first return");
-  println!("{:#?}", splt);
-  let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
+  //println!("{:#?}", splt);
+  let boundary = splt[1].split("=").collect::<Vec<&str>>()[1..].join("=");
   let mut boundary_c = boundary.chars();
   if boundary.starts_with("\"") && boundary.ends_with("\"") {
     boundary_c.next();
     boundary_c.next_back();
   }
   let boundary = boundary_c.collect::<String>();
+  //println!("boundary: {boundary}");
 
+
+  while lines.len() > 0 && lines[0].is_empty() {
+    lines.remove(0);
+  }
   let mut conti = false;
   let mut bodies = vec![];
   while lines.len() > 0 {
@@ -130,7 +141,7 @@ fn parse_content(lines: String) -> (Headers, Body) {
       lines.remove(0);
       while !lines[0].starts_with(&("--".to_owned() + &boundary)) {
         body += lines[0];
-        body += "\r\n\n";
+        body += "\n\n";
         lines.remove(0);
       }
       bodies.push(body);
@@ -180,16 +191,17 @@ fn extract(contents: Body) -> Vec<(String, (Headers, String))> {
 fn parse_contents(contents: String) -> (Headers, Contents) {
   //println!("{:#?}", contents);
   let contents_r = contents.clone();
-  println!("{contents}");
-  let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
+  let contents = contents.replace("\r\n", "\n");
+  println!("CONTENTS: {contents}");
+  let split = contents.split("\n\n\n\n").collect::<Vec<&str>>();
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
 
   if split.len()>2 {
-    let mut headers = split[0].split("\r\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
+    let mut headers = split[0].split("\n\n").map(|i| i.to_string()).collect::<Vec<String>>();
     let mut offset = 0;
     for i in 1..headers.len() {
       let i = i-offset;
-      if headers[i].starts_with(" ") {
+      if headers[i].starts_with(" ") | headers[i].starts_with("\t") {
         let part = headers[i].clone();
         headers[i-1] += &part;
         headers.remove(i);
@@ -211,8 +223,9 @@ fn parse_contents(contents: String) -> (Headers, Contents) {
       }
       (name, value.trim().to_string())
     }).collect::<Vec<(String, String)>>());
-
+    println!("headers: {headers:#?}");
     let ctype = headers.get("Content-Type");
+    println!("CTYPE F PCS: {ctype:#?}");
 
     /*let mut plain = String::from("Couldn't load body [report!].");
     let mut html = String::from("Couldn't load body [report!].");*/
@@ -240,6 +253,7 @@ fn parse_contents(contents: String) -> (Headers, Contents) {
 }
 const months: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 fn handle_email(from: String, rcpts: Vec<String>, rcontents: String, db_path: String) {
+  //fs::write("ex.txt", &rcontents).unwrap();
   let mut recipents = String::new();
   for i in rcpts {
     recipents.push_str(&(i + ", "));
@@ -283,11 +297,11 @@ CONTENTS:
   let month = months.iter().position(|x| x==&splt[2][..3].to_lowercase()).unwrap()+1;
   let day = splt[1];
   let time = splt[4];
-
   let conn = sqlite::open(&db_path).unwrap();
   let query = &format!("
-    INSERT INTO mails VALUES ('{subject}', '{rcontents}', '{from}', '{recipents}', '{year}-{month}-{day} {time}');
-  ");
+    INSERT INTO mails VALUES ('{subject}', '{contentz}', '{from}', '{recipents}', '{year}-{month}-{day} {time}');
+  ", contentz=rcontents.replace("'", "''"));
+  //println!("\n\n\n\nQUERY: {query}\n\n");
   conn.execute(query).unwrap();
 }
 
@@ -560,7 +574,9 @@ Date: Fri, 27 Jun 2025 15:00:00 +0200");
 }
 
 fn main() {
-  let args = env::args().collect::<Vec<String>>();
+  /*let a = fs::read_to_string("ex.txt").unwrap();
+  println!("{:#?}", parse_contents(a));
+  */let args = env::args().collect::<Vec<String>>();
   let mut db_path = ":mailserver:".to_string();
   for i in 0..args.len() {
     if args[i]=="--db" {
