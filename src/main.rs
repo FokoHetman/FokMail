@@ -9,7 +9,7 @@ use sqlite;
 struct Controller {
   db_path: String
 }
-
+const DB_PATH: &str = "~/DBs/\\:mail\\:";
 
 #[derive(PartialEq)]
 enum STMTState {
@@ -113,7 +113,7 @@ fn parse_content(lines: String) -> (Headers, Body) {
     _ => {println!("SPLIT BEFORE RETURN: {:#?}", split); return (headers.clone(), Body::Unit(headers, split[1].to_string()))},
   }
   //println!("{rctype} passed first return");
-
+  println!("{:#?}", splt);
   let boundary = splt[1].split("=").collect::<Vec<&str>>()[1];
   let mut boundary_c = boundary.chars();
   if boundary.starts_with("\"") && boundary.ends_with("\"") {
@@ -180,6 +180,7 @@ fn extract(contents: Body) -> Vec<(String, (Headers, String))> {
 fn parse_contents(contents: String) -> (Headers, Contents) {
   //println!("{:#?}", contents);
   let contents_r = contents.clone();
+  println!("{contents}");
   let split = contents.split("\r\n\n\r\n\n").collect::<Vec<&str>>();
   // ASSUME [HEADERS, PLAIN, PLAIN_TEXT, HTML, HTML_TEXT] unless proven otherwise.
 
@@ -367,9 +368,9 @@ fn handle_connection(mut stream: TcpStream, controller: Arc<Mutex<Controller>>) 
       STMTState::Data => {
         if buffer.trim() == "." {
           respond!("250 OK", writer);
-          let lock = controller.lock();
-          let contr = lock.unwrap();
-          handle_email(from.unwrap(), rcpts, message, contr.db_path.clone());
+          /*let lock = controller.lock();
+          let contr = lock.unwrap();*/
+          handle_email(from.unwrap(), rcpts, message, DB_PATH.to_string());
           from = None;
           rcpts = vec![];
           message = String::new();

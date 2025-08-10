@@ -20,7 +20,7 @@ dependencies = [
 [[package]]
 name = "encryption"
 version = "0.1.0"
-source = "git+ssh://git@hetman.at/~/cargo/encryption#9142b919c58f3e00a766690d7c45131188cc658d"
+source = "git+http://git.hetman.at/cargo/encryption#cc8e2d6c8621c296782a0d6a021e3b5836271b7f"
 dependencies = [
  "is_prime",
  "num-bigint",
